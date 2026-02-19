@@ -308,7 +308,7 @@ export function Overview({ dashboard }: OverviewProps) {
       }),
     } satisfies ExportImportDashboard;
 
-    window.Actual.saveFile(
+    void window.Actual.saveFile(
       JSON.stringify(data, null, 2),
       'dashboard.json',
       t('Export Dashboard'),
@@ -442,7 +442,7 @@ export function Overview({ dashboard }: OverviewProps) {
           const nextDashboard = dashboardPages.find(d => d.id !== id);
           // NOTE: This should hold since invariant dashboard_pages > 1
           if (nextDashboard) {
-            navigate(`/reports/${nextDashboard.id}`);
+            void navigate(`/reports/${nextDashboard.id}`);
           }
         },
       },
@@ -533,7 +533,7 @@ export function Overview({ dashboard }: OverviewProps) {
                           slot="close"
                           onMenuSelect={item => {
                             if (item === 'custom-report') {
-                              navigate('/reports/custom');
+                              void navigate('/reports/custom');
                               return;
                             }
 
@@ -658,16 +658,16 @@ export function Overview({ dashboard }: OverviewProps) {
                           onMenuSelect={item => {
                             switch (item) {
                               case 'reset':
-                                onResetDashboard();
+                                void onResetDashboard();
                                 break;
                               case 'export':
                                 onExport();
                                 break;
                               case 'import':
-                                onImport();
+                                void onImport();
                                 break;
                               case 'delete':
-                                onDeleteDashboard(dashboard.id);
+                                void onDeleteDashboard(dashboard.id);
                                 break;
                               default:
                                 throw new Error(

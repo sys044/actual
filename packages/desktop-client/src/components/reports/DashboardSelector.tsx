@@ -35,7 +35,7 @@ export function DashboardSelector({
       { name: defaultName },
       {
         onSuccess: id => {
-          navigate(`/reports/${id}`);
+          void navigate(`/reports/${id}`);
         },
       },
     );
@@ -97,9 +97,9 @@ export function DashboardSelector({
               slot="close"
               onMenuSelect={item => {
                 if (item === 'add-new') {
-                  handleAddDashboard();
+                  void handleAddDashboard();
                 } else {
-                  navigate(`/reports/${item}`);
+                  void navigate(`/reports/${item}`);
                 }
                 setMenuOpen(false);
               }}

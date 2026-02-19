@@ -69,7 +69,7 @@ export function ManagePayeesWithData({
 
     const lastUndoEvent = undo.getUndoState('undoEvent');
     if (lastUndoEvent) {
-      onUndo(lastUndoEvent);
+      void onUndo(lastUndoEvent);
     }
 
     return listen('undo-event', onUndo);

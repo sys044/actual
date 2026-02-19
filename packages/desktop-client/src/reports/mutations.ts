@@ -34,7 +34,7 @@ function invalidateReportQueries(
   queryClient: QueryClient,
   queryKey?: QueryKey,
 ) {
-  queryClient.invalidateQueries({
+  void queryClient.invalidateQueries({
     queryKey: queryKey ?? reportQueries.lists(),
   });
 }
@@ -43,7 +43,7 @@ function invalidateDashboardQueries(
   queryClient: QueryClient,
   queryKey?: QueryKey,
 ) {
-  queryClient.invalidateQueries({
+  void queryClient.invalidateQueries({
     queryKey: queryKey ?? dashboardQueries.lists(),
   });
 }

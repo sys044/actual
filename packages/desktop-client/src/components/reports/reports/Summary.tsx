@@ -210,7 +210,7 @@ function SummaryInner({ widget }: SummaryInnerProps) {
 
       setAllMonths(allMonths);
     }
-    run();
+    void run();
   }, [locale]);
 
   useEffect(() => {

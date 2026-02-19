@@ -217,7 +217,7 @@ export function SaveReport({
       case 'update-report':
         setErr('');
         setMenuOpen(false);
-        onAddUpdate({ menuChoice: item });
+        void onAddUpdate({ menuChoice: item });
         break;
       case 'save-report':
         setErr('');

@@ -168,7 +168,7 @@ export function CommandBar() {
   const handleNavigate = useCallback(
     (path: string) => {
       setOpen(false);
-      navigate(path);
+      void navigate(path);
     },
     [navigate],
   );

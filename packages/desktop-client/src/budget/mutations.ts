@@ -20,7 +20,7 @@ import { useDispatch } from '@desktop-client/redux';
 import type { AppDispatch } from '@desktop-client/redux/store';
 
 function invalidateQueries(queryClient: QueryClient, queryKey?: QueryKey) {
-  queryClient.invalidateQueries({
+  void queryClient.invalidateQueries({
     queryKey: queryKey ?? categoryQueries.lists(),
   });
 }
