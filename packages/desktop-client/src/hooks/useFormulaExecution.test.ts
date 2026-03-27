@@ -1,3 +1,4 @@
+import { renderHook, waitFor } from '@testing-library/react';
 import { HyperFormula } from 'hyperformula';
 import enUS from 'hyperformula/i18n/languages/enUS';
 import {
@@ -16,9 +17,13 @@ import {
   evaluateFormulaExpression,
   findCustomFunctionCalls,
   splitTopLevelArgs,
-} from 'packages/desktop-client/src/components/formula/formulaPreProcessor';
-
-import { parseBudgetParam, resolveBudgetParam } from './useFormulaExecution';
+} from '../components/formula/formulaPreProcessor';
+import { TestProviders } from '../mocks';
+import {
+  parseBudgetParam,
+  resolveBudgetParam,
+  useFormulaExecution,
+} from './useFormulaExecution';
 
 // HyperFormula requires the language pack to be registered once globally
 // before any instance can be constructed with language: 'enUS'.
@@ -432,5 +437,152 @@ describe('evaluateFormulaExpression: edge cases', () => {
   it('returns null for division by zero', () => {
     // HF returns DIV0 error object → null
     expect(evaluateFormulaExpression('1/0', EN_US)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration tests: QUERY and QUERY_COUNT through the hook
+//
+// fetchQuerySum converts the raw integer via integerToAmount(n, 2) → ÷100.
+// fetchQueryCount returns the raw integer unchanged.
+// Both go through buildFilteredTransactionsQuery which calls
+// send('make-filters-from-conditions', ...) then send('query', ...).
+// ---------------------------------------------------------------------------
+
+// Raw integer returned by the mocked backend for these tests.
+// integerToAmount(MOCK_INT, 2) === MOCK_AMOUNT
+const MOCK_INT = 5000;
+const MOCK_AMOUNT = 50; // 5000 ÷ 100
+
+function installSendMock() {
+  return vi
+    .spyOn(connection, 'send')
+    .mockImplementation(async (name: string) => {
+      switch (name) {
+        case 'make-filters-from-conditions':
+          return { filters: [] };
+        case 'query':
+          return { data: MOCK_INT };
+        default:
+          throw new Error(
+            `Unexpected send call in test: ${JSON.stringify(name)}`,
+          );
+      }
+    });
+}
+
+const hookOptions = { wrapper: TestProviders };
+
+describe('QUERY function (hook integration)', () => {
+  // Stable queries object — same reference across renders avoids extra effect runs
+  const queries = { expenses: {}, income: {} };
+
+  beforeEach(() => { installSendMock(); });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('resolves QUERY("name") to the amount-converted sum', async () => {
+    const { result } = renderHook(
+      () => useFormulaExecution('=QUERY("expenses")', queries),
+      hookOptions,
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.error).toBeNull();
+    // MOCK_INT (5000) ÷ 100 = MOCK_AMOUNT (50)
+    expect(result.current.result).toBe(MOCK_AMOUNT);
+  });
+
+  it('returns 0 for an unknown query name', async () => {
+    const emptyQueries = {};
+    const { result } = renderHook(
+      () => useFormulaExecution('=QUERY("unknown")', emptyQueries),
+      hookOptions,
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.error).toBeNull();
+    expect(result.current.result).toBe(0);
+  });
+
+  it('sums two different QUERY calls', async () => {
+    // Each query returns MOCK_AMOUNT → total = MOCK_AMOUNT * 2
+    const { result } = renderHook(
+      () => useFormulaExecution('=QUERY("income") + QUERY("expenses")', queries),
+      hookOptions,
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.result).toBe(MOCK_AMOUNT * 2);
+  });
+
+  it('deduplicates the same query name and fetches only once', async () => {
+    const spy = vi.mocked(connection.send);
+    const { result } = renderHook(
+      () =>
+        useFormulaExecution(
+          '=QUERY("expenses") + QUERY("expenses")',
+          queries,
+        ),
+      hookOptions,
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // Both occurrences resolve to MOCK_AMOUNT → 50 + 50 = 100
+    expect(result.current.result).toBe(MOCK_AMOUNT * 2);
+    // Only one 'query' message sent — the name was deduplicated before fetching
+    const querySendCount = spy.mock.calls.filter(([n]) => n === 'query').length;
+    expect(querySendCount).toBe(1);
+  });
+
+  it('allows arithmetic on a QUERY result', async () => {
+    const { result } = renderHook(
+      () => useFormulaExecution('=QUERY("expenses") * 0.1', queries),
+      hookOptions,
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // 50 * 0.1 = 5
+    expect(result.current.result).toBeCloseTo(MOCK_AMOUNT * 0.1);
+  });
+});
+
+describe('QUERY_COUNT function (hook integration)', () => {
+  // Stable queries object — same reference across renders avoids extra effect runs
+  const queries = { expenses: {} };
+
+  beforeEach(() => { installSendMock(); });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('resolves QUERY_COUNT("name") to the raw integer count (not ÷100)', async () => {
+    const { result } = renderHook(
+      () => useFormulaExecution('=QUERY_COUNT("expenses")', queries),
+      hookOptions,
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.error).toBeNull();
+    // Count is NOT amount-converted — MOCK_INT returned as-is
+    expect(result.current.result).toBe(MOCK_INT);
+  });
+
+  it('returns 0 for an unknown query name', async () => {
+    const emptyQueries = {};
+    const { result } = renderHook(
+      () => useFormulaExecution('=QUERY_COUNT("unknown")', emptyQueries),
+      hookOptions,
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.error).toBeNull();
+    expect(result.current.result).toBe(0);
+  });
+
+  it('combines QUERY and QUERY_COUNT in the same formula', async () => {
+    // QUERY("expenses") → integerToAmount(MOCK_INT, 2) = MOCK_AMOUNT = 50
+    // QUERY_COUNT("expenses") → MOCK_INT raw = 5000
+    // 50 + 5000 = 5050
+    const { result } = renderHook(
+      () =>
+        useFormulaExecution(
+          '=QUERY("expenses") + QUERY_COUNT("expenses")',
+          queries,
+        ),
+      hookOptions,
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.result).toBe(MOCK_AMOUNT + MOCK_INT);
   });
 });
