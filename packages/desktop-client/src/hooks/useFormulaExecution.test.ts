@@ -1,17 +1,24 @@
-import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
 import { HyperFormula } from 'hyperformula';
 import enUS from 'hyperformula/i18n/languages/enUS';
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 
 import * as connection from 'loot-core/platform/client/connection';
 
 import {
   evaluateFormulaExpression,
   findCustomFunctionCalls,
-  parseBudgetParam,
-  resolveBudgetParam,
   splitTopLevelArgs,
-} from './useFormulaExecution';
+} from 'packages/desktop-client/src/components/formula/formulaPreProcessor';
+
+import { parseBudgetParam, resolveBudgetParam } from './useFormulaExecution';
 
 // HyperFormula requires the language pack to be registered once globally
 // before any instance can be constructed with language: 'enUS'.
@@ -39,10 +46,9 @@ describe('splitTopLevelArgs', () => {
   });
 
   it('preserves nested parentheses as a single arg', () => {
-    expect(splitTopLevelArgs('TEXT(EDATE(TODAY(), 1), "yyyy-mm"), "foo"')).toEqual([
-      'TEXT(EDATE(TODAY(), 1), "yyyy-mm")',
-      '"foo"',
-    ]);
+    expect(
+      splitTopLevelArgs('TEXT(EDATE(TODAY(), 1), "yyyy-mm"), "foo"'),
+    ).toEqual(['TEXT(EDATE(TODAY(), 1), "yyyy-mm")', '"foo"']);
   });
 
   it('preserves nested braces as a single arg', () => {
@@ -126,7 +132,10 @@ describe('findCustomFunctionCalls', () => {
   });
 
   it('is case-insensitive for the function name', () => {
-    const result = findCustomFunctionCalls('=budget_query("a","b","c","d")', 'BUDGET_QUERY');
+    const result = findCustomFunctionCalls(
+      '=budget_query("a","b","c","d")',
+      'BUDGET_QUERY',
+    );
     expect(result).toHaveLength(1);
   });
 
@@ -255,7 +264,9 @@ describe('resolveBudgetParam', () => {
 
   it('resolves a literal string param directly', () => {
     const parsed = parseBudgetParam('"2026-01"');
-    expect(resolveBudgetParam(parsed, extractionResults, EN_US)).toBe('2026-01');
+    expect(resolveBudgetParam(parsed, extractionResults, EN_US)).toBe(
+      '2026-01',
+    );
   });
 
   it('resolves a literal array param directly', () => {
@@ -268,7 +279,9 @@ describe('resolveBudgetParam', () => {
 
   it('resolves a formula expression param via HyperFormula', () => {
     const parsed = parseBudgetParam('TEXT(DATE(2026, 4, 1), "yyyy-mm")');
-    expect(resolveBudgetParam(parsed, extractionResults, EN_US)).toBe('2026-04');
+    expect(resolveBudgetParam(parsed, extractionResults, EN_US)).toBe(
+      '2026-04',
+    );
   });
 
   it('returns undefined for null parsed param', () => {
@@ -307,7 +320,12 @@ describe('BUDGET_QUERY with formula-expression end date (regression)', () => {
             return {
               list: [
                 { id: 'cat1', name: 'Food', is_income: false, hidden: false },
-                { id: 'cat2', name: 'Transport', is_income: false, hidden: false },
+                {
+                  id: 'cat2',
+                  name: 'Transport',
+                  is_income: false,
+                  hidden: false,
+                },
               ],
               grouped: [],
             };
@@ -403,7 +421,10 @@ describe('evaluateFormulaExpression: edge cases', () => {
 
   it('handles date arithmetic without TEXT wrapper', () => {
     // EDATE(DATE(2026,3,1), 1) returns a date serial number in HF, not a string
-    const result = evaluateFormulaExpression('EDATE(DATE(2026, 3, 1), 1)', EN_US);
+    const result = evaluateFormulaExpression(
+      'EDATE(DATE(2026, 3, 1), 1)',
+      EN_US,
+    );
     expect(typeof result).toBe('number');
     expect(result).toBeGreaterThan(0);
   });

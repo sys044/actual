@@ -15,6 +15,8 @@ import type {
 
 import { useLocale } from './useLocale';
 
+import { evaluateFormulaExpression, findCustomFunctionCalls, splitTopLevelArgs } from '@desktop-client/components/formula/formulaPreProcessor';
+import type { CustomFunctionCall } from '@desktop-client/components/formula/formulaPreProcessor';
 import { getLiveRange } from '@desktop-client/components/reports/getLiveRange';
 import { calculateTimeRange } from '@desktop-client/components/reports/reportRanges';
 
@@ -30,149 +32,12 @@ function escapeRegExp(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/**
- * Split the inner text of a function call's argument list on top-level commas,
- * respecting nested parentheses, braces, and quoted strings.
- *
- * e.g. 'TEXT(EDATE(TODAY(), 1), "yyyy-mm"), "foo"'
- *   → ['TEXT(EDATE(TODAY(), 1), "yyyy-mm")', '"foo"']
- */
-export function splitTopLevelArgs(innerText: string): string[] {
-  const args: string[] = [];
-  let depth = 0;
-  let inSingle = false;
-  let inDouble = false;
-  let current = '';
-
-  for (let i = 0; i < innerText.length; i++) {
-    const ch = innerText[i];
-
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle;
-      current += ch;
-    } else if (ch === '"' && !inSingle) {
-      inDouble = !inDouble;
-      current += ch;
-    } else if (!inSingle && !inDouble && (ch === '(' || ch === '{')) {
-      depth++;
-      current += ch;
-    } else if (!inSingle && !inDouble && (ch === ')' || ch === '}')) {
-      depth--;
-      current += ch;
-    } else if (!inSingle && !inDouble && depth === 0 && ch === ',') {
-      args.push(current.trim());
-      current = '';
-    } else {
-      current += ch;
-    }
-  }
-
-  if (current.trim().length > 0) {
-    args.push(current.trim());
-  }
-
-  return args;
-}
-
-type CustomFunctionCall = {
-  fullMatch: string;
-  args: string[];
-};
-
-/**
- * Find all top-level calls to `funcName` in `formula`, using balanced-paren
- * tracking so args can themselves contain nested function calls.
- *
- * Returns an array of { fullMatch, args } — one entry per call site.
- */
-export function findCustomFunctionCalls(
-  formula: string,
-  funcName: string,
-): CustomFunctionCall[] {
-  const results: CustomFunctionCall[] = [];
-  const nameRegex = new RegExp(`${escapeRegExp(funcName)}\\s*\\(`, 'gi');
-  let nameMatch: RegExpExecArray | null;
-
-  while ((nameMatch = nameRegex.exec(formula)) !== null) {
-    const openParenIdx = formula.indexOf('(', nameMatch.index);
-    let depth = 0;
-    let closeParenIdx = -1;
-
-    for (let i = openParenIdx; i < formula.length; i++) {
-      const ch = formula[i];
-      if (ch === '(') {
-        depth++;
-      } else if (ch === ')') {
-        depth--;
-        if (depth === 0) {
-          closeParenIdx = i;
-          break;
-        }
-      }
-    }
-
-    if (closeParenIdx === -1) continue; // unbalanced, skip
-
-    const fullMatch = formula.slice(nameMatch.index, closeParenIdx + 1);
-    const innerText = formula.slice(openParenIdx + 1, closeParenIdx);
-    const args = splitTopLevelArgs(innerText);
-    results.push({ fullMatch, args });
-
-    nameRegex.lastIndex = closeParenIdx + 1;
-  }
-
-  return results;
-}
-
-/**
- * Evaluate a HyperFormula expression (without leading `=`) using a throw-away
- * HF instance. Passes the same locale and namedExpressions as the main pass so
- * formatting functions (TEXT, etc.) behave identically.
- *
- * Used to resolve formula-expression args inside BUDGET_QUERY before the async
- * business-logic phase runs.
- */
-export function evaluateFormulaExpression(
-  expr: string,
-  locale: string,
-  namedExpressions?: Record<string, number | string>,
-): string | number | null {
-  let hf: ReturnType<typeof HyperFormula.buildEmpty> | null = null;
-  try {
-    hf = HyperFormula.buildEmpty({
-      licenseKey: 'gpl-v3',
-      localeLang: locale,
-      language: 'enUS',
-    });
-
-    if (namedExpressions) {
-      for (const [name, value] of Object.entries(namedExpressions)) {
-        hf.addNamedExpression(
-          name,
-          typeof value === 'number' ? value : String(value),
-        );
-      }
-    }
-
-    const sheetName = hf.addSheet('Eval');
-    const sheetId = hf.getSheetId(sheetName);
-    if (sheetId === undefined) return null;
-
-    hf.setCellContents({ sheet: sheetId, col: 0, row: 0 }, [[`=${expr}`]]);
-    const cellValue = hf.getCellValue({ sheet: sheetId, col: 0, row: 0 });
-
-    if (cellValue && typeof cellValue === 'object' && 'type' in cellValue) {
-      return null; // HF error object
-    }
-    return cellValue as string | number | null;
-  } finally {
-    try {
-      hf?.destroy();
-    } catch (_) {
-      // ignore cleanup errors
-    }
-  }
-}
+export {
+  evaluateFormulaExpression,
+  findCustomFunctionCalls,
+  splitTopLevelArgs,
+  type CustomFunctionCall,
+} from '@desktop-client/components/formula/formulaPreProcessor';
 
 type ParsedBudgetParam =
   | { type: 'extraction'; data: { funcName: string; queryName: string } }
@@ -384,8 +249,7 @@ export function useFormulaExecution(
 
         // Process BUDGET_QUERY BEFORE replacing extraction functions.
         // Uses balanced-paren call detection so args can be arbitrary formula expressions.
-        const normalizedLocale =
-          typeof locale === 'string' ? locale : 'en-US';
+        const normalizedLocale = typeof locale === 'string' ? locale : 'en-US';
         if (budgetMatches.length > 0) {
           for (const match of budgetMatches) {
             // BUDGET_QUERY(dimension, categories, startMonth, endMonth)
