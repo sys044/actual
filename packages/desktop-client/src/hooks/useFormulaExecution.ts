@@ -30,11 +30,163 @@ function escapeRegExp(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Parse a BUDGET_QUERY parameter - can be extraction function, array literal, or string
-function parseBudgetParam(
-  param: string,
-): { type: 'extraction' | 'literal'; data: unknown } | null {
+/**
+ * Split the inner text of a function call's argument list on top-level commas,
+ * respecting nested parentheses, braces, and quoted strings.
+ *
+ * e.g. 'TEXT(EDATE(TODAY(), 1), "yyyy-mm"), "foo"'
+ *   → ['TEXT(EDATE(TODAY(), 1), "yyyy-mm")', '"foo"']
+ */
+export function splitTopLevelArgs(innerText: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let current = '';
+
+  for (let i = 0; i < innerText.length; i++) {
+    const ch = innerText[i];
+
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      current += ch;
+    } else if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      current += ch;
+    } else if (!inSingle && !inDouble && (ch === '(' || ch === '{')) {
+      depth++;
+      current += ch;
+    } else if (!inSingle && !inDouble && (ch === ')' || ch === '}')) {
+      depth--;
+      current += ch;
+    } else if (!inSingle && !inDouble && depth === 0 && ch === ',') {
+      args.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+
+  if (current.trim().length > 0) {
+    args.push(current.trim());
+  }
+
+  return args;
+}
+
+type CustomFunctionCall = {
+  fullMatch: string;
+  args: string[];
+};
+
+/**
+ * Find all top-level calls to `funcName` in `formula`, using balanced-paren
+ * tracking so args can themselves contain nested function calls.
+ *
+ * Returns an array of { fullMatch, args } — one entry per call site.
+ */
+export function findCustomFunctionCalls(
+  formula: string,
+  funcName: string,
+): CustomFunctionCall[] {
+  const results: CustomFunctionCall[] = [];
+  const nameRegex = new RegExp(`${escapeRegExp(funcName)}\\s*\\(`, 'gi');
+  let nameMatch: RegExpExecArray | null;
+
+  while ((nameMatch = nameRegex.exec(formula)) !== null) {
+    const openParenIdx = formula.indexOf('(', nameMatch.index);
+    let depth = 0;
+    let closeParenIdx = -1;
+
+    for (let i = openParenIdx; i < formula.length; i++) {
+      const ch = formula[i];
+      if (ch === '(') {
+        depth++;
+      } else if (ch === ')') {
+        depth--;
+        if (depth === 0) {
+          closeParenIdx = i;
+          break;
+        }
+      }
+    }
+
+    if (closeParenIdx === -1) continue; // unbalanced, skip
+
+    const fullMatch = formula.slice(nameMatch.index, closeParenIdx + 1);
+    const innerText = formula.slice(openParenIdx + 1, closeParenIdx);
+    const args = splitTopLevelArgs(innerText);
+    results.push({ fullMatch, args });
+
+    nameRegex.lastIndex = closeParenIdx + 1;
+  }
+
+  return results;
+}
+
+/**
+ * Evaluate a HyperFormula expression (without leading `=`) using a throw-away
+ * HF instance. Passes the same locale and namedExpressions as the main pass so
+ * formatting functions (TEXT, etc.) behave identically.
+ *
+ * Used to resolve formula-expression args inside BUDGET_QUERY before the async
+ * business-logic phase runs.
+ */
+export function evaluateFormulaExpression(
+  expr: string,
+  locale: string,
+  namedExpressions?: Record<string, number | string>,
+): string | number | null {
+  let hf: ReturnType<typeof HyperFormula.buildEmpty> | null = null;
+  try {
+    hf = HyperFormula.buildEmpty({
+      licenseKey: 'gpl-v3',
+      localeLang: locale,
+      language: 'enUS',
+    });
+
+    if (namedExpressions) {
+      for (const [name, value] of Object.entries(namedExpressions)) {
+        hf.addNamedExpression(
+          name,
+          typeof value === 'number' ? value : String(value),
+        );
+      }
+    }
+
+    const sheetName = hf.addSheet('Eval');
+    const sheetId = hf.getSheetId(sheetName);
+    if (sheetId === undefined) return null;
+
+    hf.setCellContents({ sheet: sheetId, col: 0, row: 0 }, [[`=${expr}`]]);
+    const cellValue = hf.getCellValue({ sheet: sheetId, col: 0, row: 0 });
+
+    if (cellValue && typeof cellValue === 'object' && 'type' in cellValue) {
+      return null; // HF error object
+    }
+    return cellValue as string | number | null;
+  } finally {
+    try {
+      hf?.destroy();
+    } catch (_) {
+      // ignore cleanup errors
+    }
+  }
+}
+
+type ParsedBudgetParam =
+  | { type: 'extraction'; data: { funcName: string; queryName: string } }
+  | { type: 'literal'; data: unknown }
+  | { type: 'formula'; data: string };
+
+// Parse a BUDGET_QUERY parameter - can be:
+//   extraction function: QUERY_EXTRACT_*("queryName")
+//   array literal:       {"id1";"id2"}
+//   string literal:      "value"
+//   formula expression:  TEXT(EDATE(TODAY(), 1), "yyyy-mm")  ← last-resort fallback
+export function parseBudgetParam(param: string): ParsedBudgetParam | null {
   param = param.trim();
+  if (param.length === 0) return null;
 
   // Try extraction function: QUERY_EXTRACT_*("queryName")
   const extractMatch = param.match(
@@ -57,28 +209,36 @@ function parseBudgetParam(
     return { type: 'literal', data: items };
   }
 
-  // Try string literal: "value"
+  // Try string literal: "value" or 'value'
   const stringMatch = param.match(/^["']([^"']*)["']$/);
   if (stringMatch) {
     return { type: 'literal', data: stringMatch[1] };
   }
 
-  return null;
+  // Fallback: treat as a HyperFormula formula expression to be pre-evaluated
+  return { type: 'formula', data: param };
 }
 
-// Resolve a parsed BUDGET_QUERY parameter to its actual value
-function resolveBudgetParam(
-  parsed: ReturnType<typeof parseBudgetParam>,
+// Resolve a parsed BUDGET_QUERY parameter to its actual value.
+// `locale` and `namedExpressions` are forwarded to evaluateFormulaExpression
+// so that formula-type params see the same HF environment as the main pass.
+export function resolveBudgetParam(
+  parsed: ParsedBudgetParam | null,
   extractionResults: Record<string, Record<string, unknown>>,
+  locale: string,
+  namedExpressions?: Record<string, number | string>,
 ): unknown {
-  if (!parsed || parsed.type === 'literal') {
-    return parsed?.data;
+  if (!parsed) return undefined;
+
+  if (parsed.type === 'literal') {
+    return parsed.data;
   }
 
-  const { funcName, queryName } = parsed.data as {
-    funcName: string;
-    queryName: string;
-  };
+  if (parsed.type === 'formula') {
+    return evaluateFormulaExpression(parsed.data, locale, namedExpressions);
+  }
+
+  const { funcName, queryName } = parsed.data;
   return extractionResults[funcName]?.[`${funcName}(${queryName})`];
 }
 
@@ -175,17 +335,9 @@ export function useFormulaExecution(
           }
         }
 
-        // Match BUDGET_QUERY(dimension, param1, param2, param3) where each param can be:
-        // extraction function, array literal {...}, or string "..."
-        const paramPattern = String.raw`(?:QUERY_EXTRACT_\w+\s*\([^)]*\)|\{[^}]*\}|["'][^"']*["'])`;
-        const budgetMatches = Array.from(
-          formula.matchAll(
-            new RegExp(
-              `BUDGET_QUERY\\s*\\(\\s*["']([^"']+)["']\\s*,\\s*(${paramPattern})\\s*,\\s*(${paramPattern})\\s*,\\s*(${paramPattern})\\s*\\)`,
-              'gi',
-            ),
-          ),
-        );
+        // Find all BUDGET_QUERY calls using balanced-paren tracking so args can
+        // themselves contain nested function calls (e.g. TEXT(EDATE(TODAY(), 1), "yyyy-mm")).
+        const budgetMatches = findCustomFunctionCalls(formula, 'BUDGET_QUERY');
 
         for (const queryName of queryNames) {
           const queryConfig = queries[queryName];
@@ -230,28 +382,53 @@ export function useFormulaExecution(
           processedFormula = processedFormula.replace(regex, String(value));
         }
 
-        // Process BUDGET_QUERY BEFORE replacing extraction functions
-        // This ensures we match BUDGET_QUERY with extraction functions still intact
+        // Process BUDGET_QUERY BEFORE replacing extraction functions.
+        // Uses balanced-paren call detection so args can be arbitrary formula expressions.
+        const normalizedLocale =
+          typeof locale === 'string' ? locale : 'en-US';
         if (budgetMatches.length > 0) {
           for (const match of budgetMatches) {
-            const dimension = match[1];
-            const param1Str = match[2].trim();
-            const param2Str = match[3].trim();
-            const param3Str = match[4].trim();
+            // BUDGET_QUERY(dimension, categories, startMonth, endMonth)
+            if (match.args.length < 4) {
+              console.error(
+                'BUDGET_QUERY requires 4 arguments, got:',
+                match.args,
+              );
+              continue;
+            }
+            const [dimensionArg, param1Str, param2Str, param3Str] = match.args;
+            // dimension must be a string literal
+            const dimensionMatch = dimensionArg
+              .trim()
+              .match(/^["']([^"']+)["']$/);
+            if (!dimensionMatch) {
+              console.error(
+                'BUDGET_QUERY first arg (dimension) must be a string literal, got:',
+                dimensionArg,
+              );
+              continue;
+            }
+            const dimension = dimensionMatch[1];
 
             try {
-              // Parse and resolve parameters
+              // Parse and resolve parameters — each can be extraction fn, literal, or formula expr
               const param1 = resolveBudgetParam(
                 parseBudgetParam(param1Str),
                 extractionResults,
+                normalizedLocale,
+                namedExpressions,
               );
               const param2 = resolveBudgetParam(
                 parseBudgetParam(param2Str),
                 extractionResults,
+                normalizedLocale,
+                namedExpressions,
               );
               const param3 = resolveBudgetParam(
                 parseBudgetParam(param3Str),
                 extractionResults,
+                normalizedLocale,
+                namedExpressions,
               );
 
               // Validate resolved parameters
@@ -272,13 +449,13 @@ export function useFormulaExecution(
               // Evaluate BUDGET_QUERY
               const val = await fetchBudgetDimensionValueDirect(
                 dimension,
-                param1 as string[],
-                param2 as string,
-                param3 as string,
+                param1,
+                param2,
+                param3,
               );
 
               processedFormula = processedFormula.replace(
-                match[0],
+                match.fullMatch,
                 String(val),
               );
             } catch (err) {
