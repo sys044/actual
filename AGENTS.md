@@ -247,6 +247,8 @@ yarn workspace @actual-app/web e2e
 - Use descriptive test names
 - Vitest globals are available: `describe`, `it`, `expect`, `beforeEach`, etc.
 - For sync-server tests, globals are explicitly defined in config
+- **`beforeEach` must not return a value**: if the callback returns a function (e.g. `beforeEach(() => installMock())`), Vitest treats it as an `afterEach` cleanup and calls it with no arguments. Always use a block body: `beforeEach(() => { installMock(); })`.
+- When testing React hooks that use `useLocale` or Redux, wrap with `{ wrapper: TestProviders }` from `src/mocks` rather than mocking the hooks directly.
 
 ### 3. Type Checking
 
